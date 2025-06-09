@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import logging
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 # 创建FastAPI应用
 app = FastAPI(
     title="本地媒体检索系统",
-    description="基于CLIP的本地视频图片检索系统",
+    description="基于Gemma的本地视频图片检索系统",
     version="1.0.0"
 )
 
@@ -33,8 +34,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 初始化媒体处理引擎
-media_engine = MediaProcessingEngine()
+# 挂载前端静态文件
+frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+if frontend_build_path.exists():
+    # 挂载前端构建产物中的静态资源（CSS、JS等）
+    app.mount("/static", StaticFiles(directory=str(frontend_build_path / "static")), name="static")
+    
+    # 挂载其他前端资源（如favicon、manifest等）
+    app.mount("/assets", StaticFiles(directory=str(frontend_build_path)), name="assets")
+    
+    logger.info(f"前端静态文件已挂载: {frontend_build_path}")
+else:
+    logger.warning("前端构建目录不存在，请先构建前端应用")
+
+# 媒体处理引擎实例（延迟初始化以支持多worker）
+media_engine = None
+
+def get_media_engine():
+    """获取媒体处理引擎实例（单例模式）"""
+    global media_engine
+    if media_engine is None:
+        media_engine = MediaProcessingEngine()
+    return media_engine
 
 # 不再挂载缩略图静态文件服务
 
@@ -53,30 +74,48 @@ class SearchRequest(BaseModel):
 class ProcessFilesRequest(BaseModel):
     file_paths: List[str]
 
-# API路由
+# 根路径处理 - 返回前端应用
 @app.get("/")
 async def root():
-    """根路径"""
-    return {
-        "message": "本地媒体检索系统API",
-        "version": "1.0.0",
-        "status": "运行中"
-    }
+    """根路径 - 返回前端应用"""
+    frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+    index_path = frontend_build_path / "index.html"
+    
+    if index_path.exists():
+        return FileResponse(index_path, media_type="text/html")
+    else:
+        # 如果前端未构建，返回API信息
+        return {
+            "message": "本地媒体检索系统API",
+            "version": "1.0.0",
+            "status": "运行中",
+            "note": "前端应用未构建，请运行 'tnpm run build' 构建前端"
+        }
 
 @app.get("/api/status")
 async def get_system_status():
     """获取系统状态"""
     try:
-        processing_status = media_engine.get_processing_status()
-        db_stats = media_engine.get_database_stats()
+        engine = get_media_engine()
+        processing_status = engine.get_processing_status()
+        db_stats = engine.get_database_stats()
+        
+        # 检查前端构建状态
+        frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+        frontend_status = {
+            "built": frontend_build_path.exists(),
+            "build_path": str(frontend_build_path),
+            "index_exists": (frontend_build_path / "index.html").exists() if frontend_build_path.exists() else False
+        }
         
         return {
             "success": True,
             "processing": processing_status,
             "database": db_stats,
+            "frontend": frontend_status,
             "system": {
-                "clip_model": media_engine.config["clip_model"],
-                "device": media_engine.config["device"]
+                "gemma_model": engine.config["gemma_model"],
+                "ollama_host": engine.config["ollama_host"]
             }
         }
     except Exception as e:
@@ -96,8 +135,9 @@ async def scan_directory(request: ScanRequest, background_tasks: BackgroundTasks
             raise HTTPException(status_code=400, detail="路径不是目录")
         
         # 在后台任务中执行扫描
+        engine = get_media_engine()
         background_tasks.add_task(
-            media_engine.scan_and_process_directory,
+            engine.scan_and_process_directory,
             request.directory_path,
             request.recursive
         )
@@ -129,8 +169,9 @@ async def process_files(request: ProcessFilesRequest, background_tasks: Backgrou
             raise HTTPException(status_code=400, detail="没有有效的文件路径")
         
         # 在后台任务中执行处理
+        engine = get_media_engine()
         background_tasks.add_task(
-            media_engine.process_media_files,
+            engine.process_media_files,
             valid_files
         )
         
@@ -154,7 +195,8 @@ async def search_media(request: SearchRequest):
         if not request.query.strip():
             raise HTTPException(status_code=400, detail="搜索查询不能为空")
         
-        results = media_engine.search_media(
+        engine = get_media_engine()
+        results = engine.search_media(
             query=request.query,
             max_results=request.max_results,
             aggregation_strategy=request.aggregation_strategy,
@@ -186,7 +228,8 @@ async def get_video_details(video_id: str):
         except:
             raise HTTPException(status_code=400, detail="无效的视频ID")
         
-        details = media_engine.search_engine.get_video_details(video_path)
+        engine = get_media_engine()
+        details = engine.search_engine.get_video_details(video_path)
         
         return {
             "success": True,
@@ -206,7 +249,8 @@ async def get_similar_images(image_path: str, max_results: int = 20):
         if not os.path.exists(image_path):
             raise HTTPException(status_code=400, detail="图片文件不存在")
         
-        similar_images = media_engine.search_engine.get_similar_images(
+        engine = get_media_engine()
+        similar_images = engine.search_engine.get_similar_images(
             image_path, max_results
         )
         
@@ -226,7 +270,8 @@ async def get_similar_images(image_path: str, max_results: int = 20):
 async def get_processing_status():
     """获取处理状态"""
     try:
-        status = media_engine.get_processing_status()
+        engine = get_media_engine()
+        status = engine.get_processing_status()
         return {
             "success": True,
             "status": status
@@ -239,7 +284,8 @@ async def get_processing_status():
 async def get_database_stats():
     """获取数据库统计"""
     try:
-        stats = media_engine.get_database_stats()
+        engine = get_media_engine()
+        stats = engine.get_database_stats()
         return {
             "success": True,
             "stats": stats
@@ -252,7 +298,8 @@ async def get_database_stats():
 async def get_media_files(skip: int = 0, limit: int = 100):
     """获取媒体文件列表"""
     try:
-        all_files = media_engine.db.get_all_media_files()
+        engine = get_media_engine()
+        all_files = engine.db.get_all_media_files()
         
         # 简单分页
         paginated_files = all_files[skip:skip + limit]
@@ -284,7 +331,8 @@ async def upload_file(file: UploadFile = File(...)):
             buffer.write(content)
         
         # 处理文件
-        result = media_engine._process_single_file(file_path)
+        engine = get_media_engine()
+        result = engine._process_single_file(file_path)
         
         return {
             "success": True,
@@ -341,6 +389,35 @@ async def health_check():
         "status": "healthy",
         "timestamp": "2024-01-01T00:00:00Z"
     }
+
+# 前端路由处理 - 必须放在最后，作为fallback
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    """托管前端应用"""
+    frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+    
+    # 如果前端构建目录不存在，返回404
+    if not frontend_build_path.exists():
+        raise HTTPException(status_code=404, detail="Frontend not built")
+    
+    # 跳过API路由
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+    
+    # 尝试返回请求的文件
+    file_path = frontend_build_path / full_path
+    if file_path.exists() and file_path.is_file():
+        # 根据文件扩展名设置正确的Content-Type
+        import mimetypes
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        return FileResponse(file_path, media_type=content_type)
+    
+    # 对于SPA路由（React Router等），返回index.html
+    index_path = frontend_build_path / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path, media_type="text/html")
+    
+    raise HTTPException(status_code=404, detail="Frontend resource not found")
 
 if __name__ == "__main__":
     import uvicorn

@@ -238,15 +238,15 @@ class SearchResultAggregator:
         return True
 
 class SearchEngine:
-    def __init__(self, database_manager, clip_extractor):
+    def __init__(self, database_manager, gemma_extractor):
         """
         搜索引擎
         Args:
             database_manager: 数据库管理器
-            clip_extractor: CLIP特征提取器
+            gemma_extractor: Gemma特征提取器
         """
         self.db = database_manager
-        self.clip = clip_extractor
+        self.gemma = gemma_extractor
         self.aggregator = SearchResultAggregator()
     
     def search(self, query: str, max_results: int = 50, 
@@ -267,13 +267,9 @@ class SearchEngine:
         logger.info(f"执行搜索: '{query}' (最大结果: {max_results})")
         
         try:
-            # 使用增强的查询特征提取
-            if hasattr(self.clip, 'extract_enhanced_text_features'):
-                query_embedding = self.clip.extract_enhanced_text_features(query)
-                logger.info(f"使用增强查询特征提取")
-            else:
-                query_embedding = self.clip.extract_text_features(query)
-            
+            # 使用Gemma增强的查询特征提取（提供更好的语义理解）
+            query_embedding = self.gemma.extract_text_features(query, use_gemma_enhancement=True)
+            logger.debug(f"查询特征向量维度: {query_embedding.shape}")
             # 在向量数据库中搜索
             raw_results = self.db.search_similar(
                 query_embedding.tolist(), 
@@ -312,8 +308,8 @@ class SearchEngine:
             相似图片列表
         """
         try:
-            # 提取参考图片的特征向量
-            image_embedding = self.clip.extract_image_features(image_path)
+            # 提取参考图片的特征向量（启用Gemma深度分析）
+            image_embedding = self.gemma.extract_image_features(image_path, use_gemma_analysis=True)
             
             # 搜索相似向量
             raw_results = self.db.search_similar(

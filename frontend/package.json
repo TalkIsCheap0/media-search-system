@@ -45,5 +45,6 @@
     "autoprefixer": "^10.4.14",
     "postcss": "^8.4.24"
   },
-  "proxy": "http://localhost:8000"
+  "proxy": "http://localhost:8000",
+  "repository": "https://github.com/TalkIsCheap0/media-search-system.git"
 }

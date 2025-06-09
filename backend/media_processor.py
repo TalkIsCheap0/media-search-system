@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from database import DatabaseManager
-from clip_processor import CLIPFeatureExtractor
+from gemma_processor import GemmaFeatureExtractor
 from video_processor import VideoKeyframeExtractor, ImageProcessor
 from file_scanner import MediaFileScanner
 from search_engine import SearchEngine
@@ -24,10 +24,10 @@ class MediaProcessingEngine:
         self.config = config or {
             "db_path": "./media.db",
             "chroma_path": "./chroma_db",
-            "clip_model": "ViT-L/14",
-            "device": "cpu",
-            "batch_size": 4,
-            "max_workers": 2,
+            "gemma_model": "gemma3:12b",
+            "ollama_host": "http://localhost:11434",
+            "batch_size": 4,  # 12B模型更快，可以增加批次大小
+            "max_workers": 2,  # 12B模型资源占用较少，可以增加并发
             "keyframe_config": {
                 "scene_change_threshold": 0.8,
                 "min_frame_interval": 15,
@@ -62,10 +62,10 @@ class MediaProcessingEngine:
             chroma_path=self.config["chroma_path"]
         )
         
-        # 初始化CLIP模型
-        self.clip = CLIPFeatureExtractor(
-            model_name=self.config["clip_model"],
-            device=self.config["device"]
+        # 初始化Gemma模型
+        self.gemma = GemmaFeatureExtractor(
+            ollama_host=self.config["ollama_host"],
+            model_name=self.config["gemma_model"]
         )
         
         # 初始化处理器
@@ -74,7 +74,7 @@ class MediaProcessingEngine:
         self.file_scanner = MediaFileScanner()
         
         # 初始化搜索引擎
-        self.search_engine = SearchEngine(self.db, self.clip)
+        self.search_engine = SearchEngine(self.db, self.gemma)
         
         logger.info("媒体处理引擎初始化完成")
     
@@ -238,10 +238,10 @@ class MediaProcessingEngine:
             height=video_info["height"]
         )
         
-        # 批量提取CLIP特征
+        # 批量提取Gemma特征（启用深度分析）
         frame_images = [kf["frame_data"] for kf in keyframes]
-        embeddings = self.clip.batch_extract_image_features(
-            frame_images, batch_size=self.config["batch_size"]
+        embeddings = self.gemma.batch_extract_image_features(
+            frame_images, batch_size=self.config["batch_size"], use_gemma_analysis=True
         )
         
         # 准备向量数据库数据
@@ -302,8 +302,8 @@ class MediaProcessingEngine:
             height=image_info["height"]
         )
         
-        # 提取CLIP特征
-        embedding = self.clip.extract_image_features(image_info["frame_data"])
+        # 提取Gemma特征（启用深度分析）
+        embedding = self.gemma.extract_image_features(image_info["frame_data"], use_gemma_analysis=True)
         
         # 生成向量ID
         image_hash = hashlib.md5(image_path.encode()).hexdigest()[:12]

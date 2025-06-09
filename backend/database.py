@@ -60,7 +60,16 @@ class DatabaseManager:
     
     def init_chromadb(self):
         """初始化ChromaDB向量数据库"""
-        self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+        # 配置ChromaDB设置，禁用遥测
+        settings = Settings(
+            anonymized_telemetry=False,  # 禁用匿名遥测
+            allow_reset=True
+        )
+        
+        self.chroma_client = chromadb.PersistentClient(
+            path=self.chroma_path,
+            settings=settings
+        )
         
         # 创建或获取集合
         try:
